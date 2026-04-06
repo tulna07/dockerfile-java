@@ -15,7 +15,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      security-events: write   # for uploading Trivy SARIF results
 
     steps:
       - name: Checkout
@@ -75,18 +74,10 @@ jobs:
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: scan-target:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
+          format: table
           severity: CRITICAL,HIGH
           exit-code: '1'          # fail the job on CRITICAL/HIGH findings
           ignore-unfixed: true
-
-      # ── Upload SARIF to GitHub Security tab ───────────────────────────────
-      - name: Upload Trivy SARIF
-        if: always()              # upload even when scan step fails
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
 
       # ── Build & push multi-arch image (only if scan passed) ───────────────
       - name: Build and push multi-arch
