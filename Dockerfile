@@ -15,7 +15,8 @@ RUN ./gradlew bootJar --no-daemon -q && \
     java -Djarmode=layertools -jar build/libs/*.jar extract --destination build/extracted
 
 # ---- Runtime Stage ----
-FROM dhi.io/eclipse-temurin:21-debian13 AS runtime
+# FROM dhi.io/eclipse-temurin:21-debian13 AS runtime  # DHI hardened: CIS-compliant, nonroot, no shell — 28 LOW, 13 MEDIUM CVEs
+FROM eclipse-temurin:21-jre-noble AS runtime
 
 WORKDIR /app
 
