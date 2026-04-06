@@ -1,5 +1,5 @@
 # ---- Build Stage ----
-FROM eclipse-temurin:25-jdk-noble AS builder
+FROM dhi.io/eclipse-temurin:21-jdk-debian13-dev AS builder
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ RUN ./gradlew bootJar --no-daemon -q && \
     java -Djarmode=layertools -jar build/libs/*.jar extract --destination build/extracted
 
 # ---- Runtime Stage ----
-FROM eclipse-temurin:25-jre-noble AS runtime
+FROM dhi.io/eclipse-temurin:21-debian13 AS runtime
 
 WORKDIR /app
 
