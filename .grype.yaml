@@ -1,0 +1,9 @@
+# Grype configuration — https://github.com/anchore/grype#configuration
+#
+# Ignore vulnerabilities that the OS vendor has marked "won't fix".
+# These are tracked by the distro maintainer and will not receive a patch;
+# blocking CI on them provides no actionable signal.
+# All other severities (including critical fixable vulns) still fail the gate.
+ignore:
+  - fix-state: wont-fix
+  - fix-state: not-affected
