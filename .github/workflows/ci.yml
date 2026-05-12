@@ -172,7 +172,8 @@ jobs:
             --input-files build/reports/cyclonedx-direct/bom.json sbom-image.cdx.json \
             --input-format json \
             --output-file sbom.cdx.json \
-            --output-format json
+            --output-format json \
+            --output-version v1_6
           # Sanity check — grype requires valid CycloneDX JSON
           python3 -c "import json,sys; d=json.load(open('sbom.cdx.json')); print('SBOM components:', len(d.get('components',[])))"
 
