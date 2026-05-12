@@ -266,8 +266,7 @@ jobs:
     permissions:
       actions: read     # detect reusable workflow ref
       id-token: write   # keyless signing via Fulcio
-      # packages: write is NOT needed — provenance is pushed to ECR via
-      # registry-password secret, not via GITHUB_TOKEN to GHCR
+      packages: write   # required by slsa-github-generator's internal 'generator' job
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
     with:
       image: ${{ needs.build.outputs.image }}
