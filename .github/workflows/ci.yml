@@ -60,8 +60,6 @@ jobs:
       # Output: build/reports/cyclonedx-direct/bom.json
       - name: Build JAR and generate source SBOM
         run: ./gradlew build cyclonedxDirectBom -x test
-
-      # ── 2. Set up container build tooling ─────────────────────────────────
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4.0.0
         with:
@@ -252,6 +250,8 @@ jobs:
           echo "| Merged SBOM | \`sbom.cdx.json\` (attested) |" >> $GITHUB_STEP_SUMMARY
           echo "| Signature | cosign keyless (.sig OCI referrer) |" >> $GITHUB_STEP_SUMMARY
           echo "| SBOM attestation | cosign attest (.att OCI referrer, DSSE) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Vuln scan attestation | cosign attest (.att OCI referrer, in-toto vulns/v0.1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SLSA provenance | slsa-github-generator (.att OCI referrer, SLSA v0.2) |" >> $GITHUB_STEP_SUMMARY
 
   # ── SLSA provenance — isolated job (required for Build L3) ──────────────
   # Runs AFTER build in a separate, isolated GitHub Actions job.
