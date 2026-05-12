@@ -5,7 +5,13 @@ on:
     branches: [main]
 
 # Deny all permissions by default. Each job declares only what it needs.
-permissions: {}
+# packages: write is declared here (not denied) because slsa-github-generator's
+# internal 'generator' job unconditionally requests it — GitHub requires the
+# top-level workflow to permit any permission a nested reusable workflow requests.
+# The build job does NOT use packages: write; only the provenance job's reusable
+# workflow uses it (to push the .att referrer).
+permissions:
+  packages: write
 
 # Explicit shell for all run steps — ensures consistent errexit behaviour.
 defaults:
