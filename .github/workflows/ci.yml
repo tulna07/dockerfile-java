@@ -170,7 +170,8 @@ jobs:
         run: |
           cyclonedx-cli merge \
             --input-files build/reports/cyclonedx-direct/bom.json sbom-image.cdx.json \
-            --output-file sbom.cdx.json
+            --output-file sbom.cdx.json \
+            --output-format json
 
       # ── 9. Upload SBOM to Dependency-Track ────────────────────────────────
       # Enables continuous CVE monitoring, OSV/GHSA alert subscription,
