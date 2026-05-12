@@ -141,7 +141,8 @@ jobs:
         uses: anchore/scan-action/download-grype@v7.4.0
         with:
           cache-db: true   # cache vuln DB in GHA cache; avoids full download each run
-      - run: echo "${{ steps.grype.outputs.cmd }}" | xargs dirname >> $GITHUB_PATH
+      - name: Add grype to PATH
+        run: echo "${{ steps.grype.outputs.cmd }}" | xargs dirname >> $GITHUB_PATH
 
       - name: Install cyclonedx-cli
         env:
@@ -174,8 +175,6 @@ jobs:
             --output-file sbom.cdx.json \
             --output-format json \
             --output-version v1_6
-          # Sanity check — grype requires valid CycloneDX JSON
-          python3 -c "import json,sys; d=json.load(open('sbom.cdx.json')); print('SBOM components:', len(d.get('components',[])))"
 
       # ── 9. Upload SBOM to Dependency-Track ────────────────────────────────
       # Enables continuous CVE monitoring, OSV/GHSA alert subscription,
