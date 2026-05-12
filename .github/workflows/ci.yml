@@ -137,9 +137,11 @@ jobs:
         uses: anchore/sbom-action/download-syft@v0.24.0
 
       - name: Install grype
+        id: grype
         uses: anchore/scan-action/download-grype@v7.4.0
         with:
           cache-db: true   # cache vuln DB in GHA cache; avoids full download each run
+      - run: echo "${{ steps.grype.outputs.cmd }}" | xargs dirname >> $GITHUB_PATH
 
       - name: Install cyclonedx-cli
         env:
