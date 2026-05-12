@@ -4,100 +4,270 @@ on:
   push:
     branches: [main]
 
+# Deny all permissions by default. Each job declares only what it needs.
+permissions: {}
+
+# Explicit shell for all run steps — ensures consistent errexit behaviour.
+defaults:
+  run:
+    shell: bash
+
+# Cancel in-progress runs on the same branch when a new push arrives.
+# Prevents concurrent builds racing to push/sign the same image tag.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
   ECR_REPO: dockerfile-java
 
 jobs:
-  build-scan-push:
-    name: Build / Scan / Push
+  build:
+    name: Build / SBOM / Sign / Attest
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write   # required for OIDC auth to AWS
+      id-token: write   # required for: AWS OIDC + keyless Cosign signing
+    outputs:
+      image: ${{ steps.ecr-token.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+      ecr-password: ${{ steps.ecr-token.outputs.password }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      # ── Cache Gradle dependencies ──────────────────────────────────────────
-      - name: Cache Gradle
-        uses: actions/cache@v4
+        uses: actions/checkout@v6.0.2
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-
+          persist-credentials: false   # token not needed after checkout; reduce blast radius
 
-      # ── Set up QEMU for cross-platform emulation ───────────────────────────
+      - name: Set up Java 21
+        uses: actions/setup-java@v5.2.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle                  # built-in Gradle dep cache — replaces actions/cache
+
+      # ── 1. Build JAR + generate source SBOM ───────────────────────────────
+      # cyclonedxDirectBom reads Gradle's resolved dependency graph.
+      # Produces accurate pkg:maven/... purls for all runtime deps.
+      # Output: build/reports/cyclonedx-direct/bom.json
+      - name: Build JAR and generate source SBOM
+        run: ./gradlew build cyclonedxDirectBom -x test
+
+      # ── 2. Set up container build tooling ─────────────────────────────────
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4.0.0
+        with:
+          platforms: arm64   # only arm64 needed; amd64 is native on ubuntu-latest
 
-      # ── Set up Buildx ──────────────────────────────────────────────────────
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.0.0
 
-      # ── Authenticate to AWS via OIDC (no long-lived keys) ─────────────────
+      # ── 3. Authenticate to AWS via OIDC (no long-lived keys) ──────────────
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.1.1
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          role-session-name: ${{ github.run_id }}              # traceable in CloudTrail
+          role-duration-seconds: 900                           # minimum TTL — least privilege
+          mask-aws-account-id: true                            # prevent account ID in logs
+          allowed-account-ids: ${{ secrets.AWS_ACCOUNT_ID }}  # fail fast if wrong account
+          retry-max-attempts: 3                                # fail fast on real STS errors
 
-      # ── Log in to ECR ──────────────────────────────────────────────────────
       - name: Log in to ECR
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@v2.1.5
+        with:
+          mask-password: true   # mask ECR token in debug logs
 
-      # ── Derive image metadata (tags + labels) ──────────────────────────────
+      # Fetch ECR token for the provenance job (slsa-github-generator needs
+      # registry credentials to push the .att referrer to ECR).
+      # Also capture the full image name for job outputs — env context is not
+      # available in job-level outputs, only step outputs are.
+      - name: Get ECR token and capture image ref
+        id: ecr-token
+        run: |
+          TOKEN=$(aws ecr get-login-password --region ${{ secrets.AWS_REGION }})
+          echo "::add-mask::${TOKEN}"
+          echo "password=${TOKEN}" >> $GITHUB_OUTPUT
+          echo "image=${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}" >> $GITHUB_OUTPUT
+
+      # ── 4. Derive image tags ───────────────────────────────────────────────
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6.0.0
         with:
           images: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}
           tags: |
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      # ── Build amd64 locally for scanning ──────────────────────────────────
-      - name: Build (amd64 local load for scan)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: scan-target:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # ── Trivy: report all severities ──────────────────────────────────────
-      - name: Trivy scan
-        uses: aquasecurity/trivy-action@v0.35.0
-        with:
-          image-ref: scan-target:${{ github.sha }}
-          format: json
-          output: trivy-results.json
-          severity: CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN
-          exit-code: '0'
-          ignore-unfixed: false
-
-      - name: Trivy summary
-        run: |
-          echo "### Trivy Scan Results" >> $GITHUB_STEP_SUMMARY
-          jq -r '.Results[]?.Vulnerabilities[]? | .Severity' trivy-results.json \
-            | sort | uniq -c | sort -rn \
-            | awk '{print "- **" $2 "**: " $1}' >> $GITHUB_STEP_SUMMARY
-
-      # ── Build & push multi-arch to ECR ────────────────────────────────────
+      # ── 5. Build and push — disable buildkit SBOM/provenance ──────────────
+      # provenance=false, sbom=false: we generate our own via Gradle plugin +
+      # syft + cosign attest. Buildkit's built-in attestations are signed by
+      # the Buildkit daemon key (no Rekor entry, not verifiable by cosign,
+      # not Kyverno-enforceable) — do not use them as production attestations.
       - name: Build and push multi-arch
-        uses: docker/build-push-action@v6
+        id: build
+        uses: docker/build-push-action@v7.1.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}  # OCI Image Spec 1.1 manifest annotations
+          provenance: false
+          sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
+
+      # ── 6. Install supply chain tooling ───────────────────────────────────
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0.24.0
+
+      - name: Install grype
+        uses: anchore/scan-action/download-grype@v7.4.0
+        with:
+          cache-db: true   # cache vuln DB in GHA cache; avoids full download each run
+
+      - name: Install cyclonedx-cli
+        env:
+          CDXCLI_VERSION: v0.31.0
+        run: |
+          curl -sSfL \
+            "https://github.com/CycloneDX/cyclonedx-cli/releases/download/${CDXCLI_VERSION}/cyclonedx-linux-x64" \
+            -o /usr/local/bin/cyclonedx-cli
+          chmod +x /usr/local/bin/cyclonedx-cli
+
+      # ── 7. Generate image SBOM ─────────────────────────────────────────────
+      # syft scans OS packages, JRE layers, and base image components.
+      # --platform linux/amd64: multi-arch push produces a manifest list;
+      # specify a single platform so syft pulls a concrete image manifest.
+      # Uses digest (not tag) — tags are mutable.
+      - name: Generate image SBOM
+        run: |
+          syft ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ steps.build.outputs.digest }} \
+            --platform linux/amd64 \
+            -o cyclonedx-json=sbom-image.cdx.json
+
+      # ── 8. Merge source + image SBOMs ─────────────────────────────────────
+      # Result: one SBOM covering Maven deps (from Gradle plugin) +
+      # OS/JRE packages (from syft). This is the authoritative SBOM.
+      - name: Merge SBOMs
+        run: |
+          cyclonedx-cli merge \
+            --input-files build/reports/cyclonedx-direct/bom.json sbom-image.cdx.json \
+            --output-file sbom.cdx.json
+
+      # ── 9. Upload SBOM to Dependency-Track ────────────────────────────────
+      # Enables continuous CVE monitoring, OSV/GHSA alert subscription,
+      # and portfolio-wide impact queries (e.g. "which services use log4j?").
+      # Requires DT_URL and DT_API_KEY secrets. Step is skipped if not set.
+      # Note: secrets context is not available in step `if` conditions;
+      # the secret is passed via env and checked there instead.
+      - name: Upload SBOM to Dependency-Track
+        env:
+          DT_URL: ${{ secrets.DT_URL }}
+          DT_API_KEY: ${{ secrets.DT_API_KEY }}
+        run: |
+          [[ -z "${DT_URL}" ]] && { echo "DT_URL not set, skipping"; exit 0; }
+          curl -sSf \
+            -H "X-Api-Key: ${DT_API_KEY}" \
+            -F "projectName=${{ env.ECR_REPO }}" \
+            -F "projectVersion=${{ github.sha }}" \
+            -F "autoCreate=true" \
+            -F "bom=@sbom.cdx.json" \
+            "${DT_URL}/api/v1/bom"
+
+      # ── 10. Scan SBOM — CI gate ────────────────────────────────────────────
+      # Scan the merged SBOM, not the image. Faster (no image pull), more
+      # accurate (uses purls from Gradle plugin), and catches source-level deps.
+      # grype supports multiple -o flags in one pass — JSON for attestation,
+      # table for the CI log. --fail-on critical enforces the gate.
+      - name: Scan SBOM
+        run: |
+          grype sbom:sbom.cdx.json \
+            -o json=grype-results.json \
+            -o table \
+            --fail-on critical
+
+      # Attest the vuln scan result so consumers can verify what was scanned
+      # and when. Predicate type: https://in-toto.io/attestation/vulns/v0.1
+      - name: Attest vuln scan result
+        run: |
+          cosign attest --yes \
+            --predicate grype-results.json \
+            --type https://in-toto.io/attestation/vulns/v0.1 \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ steps.build.outputs.digest }}
+
+      # ── 11. Sign image ─────────────────────────────────────────────────────
+      # Keyless signing: GitHub Actions OIDC token → Fulcio short-lived cert
+      # → ephemeral keypair → sign → Rekor entry → key destroyed.
+      # Signs the manifest list digest — covers both amd64 and arm64.
+      - name: Sign image
+        run: |
+          cosign sign --yes \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ steps.build.outputs.digest }}
+
+      # ── 12. Attest SBOM ────────────────────────────────────────────────────
+      # Wraps sbom.cdx.json in a signed in-toto DSSE envelope and pushes it
+      # as an OCI referrer (.att) alongside the image. Verifiable by cosign
+      # verify-attestation and enforceable by Kyverno.
+      - name: Attest SBOM
+        run: |
+          cosign attest --yes \
+            --predicate sbom.cdx.json \
+            --type https://cyclonedx.org/bom \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${{ steps.build.outputs.digest }}
+
+      # ── 13. Summary ────────────────────────────────────────────────────────
+      - name: Job summary
+        if: always()
+        run: |
+          DIGEST="${{ steps.build.outputs.digest }}"
+          IMAGE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}@${DIGEST}"
+          echo "### Supply Chain Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Artifact |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${IMAGE}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source SBOM | \`build/reports/cyclonedx-direct/bom.json\` (Gradle plugin) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image SBOM | \`sbom-image.cdx.json\` (syft, linux/amd64) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Merged SBOM | \`sbom.cdx.json\` (attested) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Signature | cosign keyless (.sig OCI referrer) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SBOM attestation | cosign attest (.att OCI referrer, DSSE) |" >> $GITHUB_STEP_SUMMARY
+
+  # ── SLSA provenance — isolated job (required for Build L3) ──────────────
+  # Runs AFTER build in a separate, isolated GitHub Actions job.
+  # Isolation is what earns SLSA Build L3: the provenance generator cannot
+  # be influenced by the build job's environment or steps.
+  #
+  # slsa-github-generator calls cosign attest internally and pushes the
+  # provenance as an OCI referrer (.att) signed by the generator workflow's
+  # own Fulcio cert — not the build job's cert. This is intentional.
+  #
+  # Verify with:
+  #   slsa-verifier verify-image \
+  #     --source-uri github.com/<org>/<repo> \
+  #     <ECR_REGISTRY>/<ECR_REPO>@<digest>
+  provenance:
+    name: SLSA Build L3 Provenance
+    needs: [build]
+    permissions:
+      actions: read     # detect reusable workflow ref
+      id-token: write   # keyless signing via Fulcio
+      # packages: write is NOT needed — provenance is pushed to ECR via
+      # registry-password secret, not via GITHUB_TOKEN to GHCR
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ${{ needs.build.outputs.image }}
+      digest: ${{ needs.build.outputs.digest }}
+      registry-username: AWS      # ECR username is always "AWS"
+      private-repository: true    # allow posting to public Rekor log from a private repo;
+                                  # without this the provenance has no transparency log entry
+    secrets:
+      registry-password: ${{ needs.build.outputs.ecr-password }}

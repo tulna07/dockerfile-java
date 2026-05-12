@@ -2,6 +2,7 @@ plugins {
 	id 'java'
 	id 'org.springframework.boot' version '4.0.5'
 	id 'io.spring.dependency-management' version '1.1.7'
+	id 'org.cyclonedx.bom' version '3.2.4'
 }
 
 group = 'com.example'
@@ -25,4 +26,14 @@ dependencies {
 
 tasks.named('test') {
 	useJUnitPlatform()
+}
+
+// Source SBOM — reads Gradle's resolved dependency graph
+// Output: build/reports/cyclonedx-direct/bom.json
+tasks.cyclonedxDirectBom {
+	includeConfigs = ['runtimeClasspath']
+	skipConfigs   = ['.*[Tt]est.*']
+	projectType   = 'application'
+	schemaVersion = org.cyclonedx.model.schema.SchemaVersion.VERSION_16
+	includeLicenseText = false
 }
