@@ -66,7 +66,7 @@ jobs:
           platforms: arm64   # only arm64 needed; amd64 is native on ubuntu-latest
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.0.0
+        uses: docker/setup-buildx-action@v4.1.0
 
       # ── 3. Authenticate to AWS via OIDC (no long-lived keys) ──────────────
       - name: Configure AWS credentials
