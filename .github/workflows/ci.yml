@@ -61,7 +61,7 @@ jobs:
       - name: Build JAR and generate source SBOM
         run: ./gradlew build cyclonedxDirectBom -x test
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4.0.0
+        uses: docker/setup-qemu-action@v4.1.0
         with:
           platforms: arm64   # only arm64 needed; amd64 is native on ubuntu-latest
 
