@@ -81,7 +81,7 @@ jobs:
           retry-max-attempts: 3                                # fail fast on real STS errors
 
       - name: Log in to ECR
-        uses: aws-actions/amazon-ecr-login@v2.1.5
+        uses: aws-actions/amazon-ecr-login@v2.1.6
         with:
           mask-password: true   # mask ECR token in debug logs
 
