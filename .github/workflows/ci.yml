@@ -48,7 +48,7 @@ jobs:
           persist-credentials: false   # token not needed after checkout; reduce blast radius
 
       - name: Set up Java 21
-        uses: actions/setup-java@v5.2.0
+        uses: actions/setup-java@v5.4.0
         with:
           java-version: '21'
           distribution: 'temurin'
