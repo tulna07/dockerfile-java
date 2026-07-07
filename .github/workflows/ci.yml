@@ -114,7 +114,7 @@ jobs:
       # not Kyverno-enforceable) — do not use them as production attestations.
       - name: Build and push multi-arch
         id: build
-        uses: docker/build-push-action@v7.1.0
+        uses: docker/build-push-action@v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
